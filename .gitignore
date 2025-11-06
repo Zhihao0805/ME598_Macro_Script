@@ -1,0 +1,23 @@
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 临时文件
+*.log
+*.tmp
+*.bak
+
+# VSCode 配置文件
+.vscode/
+.history/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 虚拟环境
+venv/
+env/
+.env/
