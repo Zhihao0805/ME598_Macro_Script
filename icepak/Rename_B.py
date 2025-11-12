@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 # ============================================================
-# Icepak Macro: Rename Solids by Geometry Heuristics
-# ------------------------------------------------------------
-# 自动分析几何厚度/体积，将实体命名为 FR4_base、GPU_Package、
-# Copper_xx 等。适合没有明显父节点结构的导入模型。
+# Icepak Macro (IronPython 2.7)
+# Rename solids by geometry heuristics (thickness/volume).
+# Useful when the import has no clear parent grouping.
+# Heuristics assume mm model units.
 # ============================================================
 
-import math
 import ScriptEnv
 ScriptEnv.Initialize("Ansoft.ElectronicsDesktop")
 
@@ -14,58 +13,72 @@ oProject = oDesktop.GetActiveProject()
 oDesign  = oProject.GetActiveDesign()
 oEditor  = oDesign.SetActiveEditor("3D Modeler")
 
-# ===== 启发式判定参数 (mm) =====
-HEU_FR4_THICK_RANGE   = (1.2, 2.2)    # FR4 常见厚度 1.6 mm
-HEU_GPU_PKG_THICK_RG  = (2.0, 5.0)    # GPU 封装厚度
-HEU_CU_SHEET_THICK_RG = (0.02, 0.15)  # 铜层厚度
-# =================================
+# -------- Heuristic thresholds (in mm) --------
+HEU_FR4_THICK_RANGE   = (1.2, 2.2)    # Typical FR4 thickness around 1.6 mm
+HEU_GPU_PKG_THICK_RG  = (2.0, 5.0)    # Typical GPU package thickness
+HEU_CU_SHEET_THICK_RG = (0.02, 0.15)  # Typical copper layer thickness
+# ---------------------------------------------
 
-def get_bbox(obj):
+def get_bbox(name):
+    """Get bounding box (xmin, ymin, zmin, xmax, ymax, zmax) as floats."""
     try:
-        b = oEditor.GetObjectBoundingBox(obj)
-        return tuple(float(v) for v in b)
+        b = oEditor.GetObjectBoundingBox(name)
+        return (float(b[0]), float(b[1]), float(b[2]),
+                float(b[3]), float(b[4]), float(b[5]))
     except:
-        return (0,0,0,0,0,0)
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 def bbox_sizes(b):
-    dx = abs(b[3]-b[0]); dy = abs(b[4]-b[1]); dz = abs(b[5]-b[2])
-    return dx, dy, dz
+    """Return (dx, dy, dz) in mm."""
+    return (abs(b[3] - b[0]), abs(b[4] - b[1]), abs(b[5] - b[2]))
 
 def bbox_vol(b):
+    """Return volume proxy (dx*dy*dz)."""
     dx, dy, dz = bbox_sizes(b)
-    return dx*dy*dz
+    return dx * dy * dz
 
-def rename(old_name, new_name):
-    if old_name == new_name: return True
+def rename_safe(old_name, new_name):
+    """Rename with fallback path."""
+    if not old_name or old_name == new_name:
+        return False
     try:
         oEditor.RenameObject(old_name, new_name)
-        print(f"[OK] {old_name} -> {new_name}")
+        print "[OK] {0} -> {1}".format(old_name, new_name)
         return True
     except:
-        try:
-            oEditor.ChangeProperty(
+        pass
+    try:
+        oEditor.ChangeProperty(
+            [
+                "NAME:AllTabs",
                 [
-                    "NAME:AllTabs",
-                    [
-                        "NAME:Geometry3DAttributeTab",
-                        ["NAME:PropServers", old_name],
-                        ["NAME:ChangedProps", ["NAME:Name", "Value:=", new_name]]
+                    "NAME:Geometry3DAttributeTab",
+                    ["NAME:PropServers", old_name],
+                    ["NAME:ChangedProps",
+                        ["NAME:Name", "Value:=", new_name]
                     ]
                 ]
-            )
-            print(f"[OK] {old_name} -> {new_name}")
-            return True
-        except:
-            print(f"[WARN] Rename failed for {old_name}")
-            return False
+            ]
+        )
+        print "[OK] {0} -> {1}".format(old_name, new_name)
+        return True
+    except Exception as e:
+        print "[WARN] Rename failed for {0}: {1}".format(old_name, e)
+        return False
 
-def seq_label(n): return f"{n:02d}"
+def seq2(n):
+    return "%02d" % n
 
-solids = list(oEditor.GetObjectsInGroup("Solids"))
+# Collect all solid bodies in the design
+try:
+    solids = list(oEditor.GetObjectsInGroup("Solids"))
+except:
+    solids = []
 
-# 分类容器
+# Buckets
 fr4, gpu, copper, others = [], [], [], []
 
+# Classify by thickness heuristic (min of dx, dy, dz)
 for s in solids:
     b = get_bbox(s)
     dx, dy, dz = bbox_sizes(b)
@@ -81,26 +94,41 @@ for s in solids:
         others.append((s, b))
 
 renamed = 0
-# FR4：体积最大者为 FR4_base
+
+# FR4: largest volume as base
 if fr4:
     fr4_sorted = sorted(fr4, key=lambda t: -bbox_vol(t[1]))
-    if rename(fr4_sorted[0][0], "FR4_base"): renamed += 1
-    for i, (s, _) in enumerate(fr4_sorted[1:], start=1):
-        if rename(s, f"FR4_extra_{seq_label(i)}"): renamed += 1
+    if rename_safe(fr4_sorted[0][0], "FR4_base"):
+        renamed += 1
+    i = 1
+    for s, _ in fr4_sorted[1:]:
+        if rename_safe(s, "FR4_extra_{0}".format(seq2(i))):
+            renamed += 1
+        i += 1
 
-# GPU Package
+# GPU package: largest volume as GPU_Package
 if gpu:
     gpu_sorted = sorted(gpu, key=lambda t: -bbox_vol(t[1]))
-    if rename(gpu_sorted[0][0], "GPU_Package"): renamed += 1
-    for i, (s, _) in enumerate(gpu_sorted[1:], start=1):
-        if rename(s, f"GPU_Sub_{seq_label(i)}"): renamed += 1
+    if rename_safe(gpu_sorted[0][0], "GPU_Package"):
+        renamed += 1
+    i = 1
+    for s, _ in gpu_sorted[1:]:
+        if rename_safe(s, "GPU_Sub_{0}".format(seq2(i))):
+            renamed += 1
+        i += 1
 
 # Copper sheets
-for i, (s, _) in enumerate(sorted(copper, key=lambda t: -bbox_vol(t[1])), start=1):
-    if rename(s, f"Copper_{seq_label(i)}"): renamed += 1
+i = 1
+for s, _ in sorted(copper, key=lambda t: -bbox_vol(t[1])):
+    if rename_safe(s, "Copper_{0}".format(seq2(i))):
+        renamed += 1
+    i += 1
 
 # Others
-for i, (s, _) in enumerate(sorted(others, key=lambda t: -bbox_vol(t[1])), start=1):
-    if rename(s, f"Imported_{seq_label(i)}"): renamed += 1
+i = 1
+for s, _ in sorted(others, key=lambda t: -bbox_vol(t[1])):
+    if rename_safe(s, "Imported_{0}".format(seq2(i))):
+        renamed += 1
+    i += 1
 
-print(f"[DONE] Renamed {renamed} solids by geometry heuristics.")
+print "[DONE] Renamed {0} solids by geometry heuristics.".format(renamed)
